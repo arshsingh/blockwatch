@@ -1,15 +1,14 @@
 use anyhow::Result;
+use ethers_core::types::{Log, U64};
 use sqlx::any::{install_default_drivers, AnyRow};
 use sqlx::{AnyPool, Row};
 use svix_ksuid::*;
 
-use crate::rpc::Log;
-
 pub struct Delivery {
     pub id: String,
-    pub chain_id: i32,
     pub hook_id: String,
-    pub block_number: String,
+    pub chain_id: i32,
+    pub block_number: U64,
     pub logs: Vec<Log>,
     pub failed_at: Option<String>,
 }
@@ -36,12 +35,14 @@ pub async fn migrate(pool: &AnyPool) -> Result<()> {
 pub async fn get_last_block_number(
     pool: &AnyPool,
     chain_id: i32,
-) -> Result<Option<String>> {
+) -> Result<Option<U64>> {
     let sql = "SELECT last_block_number FROM trackers WHERE chain_id = $1;";
-    let num = sqlx::query_scalar::<_, String>(sql)
-        .bind(i64::from(chain_id))
+    let num = sqlx::query_scalar::<_, i64>(sql)
+        .bind(chain_id)
         .fetch_optional(pool)
-        .await?;
+        .await?
+        .map(|n| n.try_into())
+        .transpose()?;
 
     Ok(num)
 }
@@ -51,21 +52,22 @@ type HookID = String;
 pub async fn mark_block_processed(
     pool: &AnyPool,
     chain_id: i32,
-    block_number: &str,
-    deliveries: &Vec<(HookID, Vec<&Log>)>,
+    block_number: U64,
+    deliveries: &Vec<(HookID, U64, Vec<&Log>)>,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
 
     for delivery in deliveries {
         sqlx::query(
             "INSERT INTO deliveries (id, chain_id, hook_id, block_number, logs)
-             VALUES ($1, $2, $3, $4, $5);",
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (hook_id, block_number) DO NOTHING;",
         )
         .bind(generate_id())
         .bind(chain_id)
         .bind(&delivery.0)
-        .bind(block_number)
-        .bind(serde_json::to_string(&delivery.1)?)
+        .bind(i64::try_from(delivery.1.as_u64())?)
+        .bind(serde_json::to_string(&delivery.2)?)
         .execute(&mut *tx)
         .await?;
     }
@@ -75,7 +77,7 @@ pub async fn mark_block_processed(
                  ON CONFLICT (chain_id) DO UPDATE SET
                     last_block_number = $2, last_block_processed_at = CURRENT_TIMESTAMP;")
         .bind(chain_id)
-        .bind(block_number)
+        .bind(i64::try_from(block_number.as_u64())?)
         .execute(&mut *tx)
         .await?;
 
@@ -84,19 +86,25 @@ pub async fn mark_block_processed(
     Ok(())
 }
 
-pub async fn get_pending_deliveries(pool: &AnyPool) -> Result<Vec<Delivery>> {
+pub async fn get_pending_deliveries(
+    pool: &AnyPool,
+    max: i64,
+) -> Result<Vec<Delivery>> {
     let sql =
-        "SELECT id, chain_id, hook_id, block_number, logs FROM deliveries WHERE failed_at IS NULL;";
+        "SELECT id, chain_id, hook_id, block_number, logs FROM deliveries WHERE failed_at IS NULL ORDER BY block_number ASC LIMIT $1;";
     sqlx::query(sql)
+        .bind(max)
         .fetch_all(pool)
         .await?
         .into_iter()
         .map(|row: AnyRow| {
+            let block_number: i64 = row.try_get("block_number")?;
+
             Ok(Delivery {
                 id: row.try_get("id")?,
                 chain_id: row.try_get("chain_id")?,
                 hook_id: row.try_get("hook_id")?,
-                block_number: row.try_get("block_number")?,
+                block_number: block_number.into(),
                 logs: serde_json::from_str(row.try_get("logs")?)?,
                 failed_at: None,
             })

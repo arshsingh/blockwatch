@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep, Duration};
-use tracing::error;
+use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 
 use blockwatch::config::Config;
@@ -21,20 +21,24 @@ async fn main() -> Result<()> {
 
     db::migrate(&pool).await?;
 
+    info!("Starting listeners for {} networks", config.networks.len());
+
     // Pending deliveries channel. Each listener will try_send
     // a message on this channel to indicate that there are new
     // messages to deliver.
     let (delivery_tx, mut delivery_rx) = mpsc::channel::<()>(1);
 
-    for (_, network) in config.networks.clone() {
+    for network in config.networks.values() {
+        let config = config.clone();
         let pool = pool.clone();
         let tx = delivery_tx.clone();
+        let chain_id = network.chain_id.clone();
 
         tokio::spawn(async move {
-            while let Err(e) = listen(&pool, &network, &tx).await {
+            while let Err(e) = listen(&pool, &config, chain_id, &tx).await {
                 error!(
-                    chain_id=network.chain_id, error=?e,
-                    "listener failed, restarting in 5 secs",
+                    chain_id=chain_id, error=?e,
+                    "Listener failed, restarting in 5 secs",
                 );
                 sleep(Duration::from_secs(5)).await;
             }

@@ -1,5 +1,11 @@
+use std::time::Duration;
+
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use ethbloom::Bloom;
+use ethers_core::types::{
+    Address, Block as PossiblyPendingBlock, Log, TxHash, H256, U256, U64,
+};
+use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
@@ -8,23 +14,31 @@ struct RPCResponse<T> {
     result: T,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Block {
-    pub number: String,
-    pub logs_bloom: String,
+    pub hash: H256,
+    pub number: U64,
+    pub logs_bloom: Bloom,
+    pub timestamp: U256,
+    pub transactions: Vec<TxHash>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct Log {
-    pub log_index: String,
-    pub transaction_hash: String,
-    pub block_hash: String,
-    pub block_number: String,
-    pub address: String,
-    pub data: String,
-    pub topics: Vec<String>,
+impl TryFrom<PossiblyPendingBlock<TxHash>> for Block {
+    type Error = anyhow::Error;
+
+    fn try_from(block: PossiblyPendingBlock<TxHash>) -> Result<Self> {
+        let err =
+            || anyhow::anyhow!("cannot derive block from pending block data");
+
+        Ok(Self {
+            hash: block.hash.ok_or_else(err)?,
+            number: block.number.ok_or_else(err)?,
+            logs_bloom: block.logs_bloom.ok_or_else(err)?,
+            timestamp: block.timestamp,
+            transactions: block.transactions,
+        })
+    }
 }
 
 #[tracing::instrument(skip(rpc_url))]
@@ -36,6 +50,7 @@ pub async fn send_rpc<T: serde::de::DeserializeOwned>(
     let client = reqwest::Client::new();
     let res = client
         .post(rpc_url)
+        .timeout(Duration::from_secs(10))
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1 as u8,
@@ -57,21 +72,27 @@ pub async fn send_rpc<T: serde::de::DeserializeOwned>(
 
 pub async fn get_block(
     rpc_url: &str,
-    block_number: &str,
+    block_number: U64,
 ) -> Result<Option<Block>> {
     let params = json!([block_number, false]);
-    let block: Option<Block> =
-        send_rpc(rpc_url, "eth_getBlockByNumber", params).await?;
 
-    Ok(block)
+    send_rpc(rpc_url, "eth_getBlockByNumber", params).await
 }
 
-pub async fn get_logs(rpc_url: &str, block_number: &str) -> Result<Vec<Log>> {
-    let params = json!([{
-        "fromBlock": block_number,
-        "toBlock": block_number,
-    }]);
-    let logs: Vec<Log> = send_rpc(rpc_url, "eth_getLogs", params).await?;
+pub async fn get_latest_block_number(rpc_url: &str) -> Result<U64> {
+    send_rpc(rpc_url, "eth_blockNumber", json!([])).await
+}
 
-    Ok(logs)
+pub async fn get_logs(
+    rpc_url: &str,
+    from_block: U64,
+    to_block: U64,
+    contracts: &[Address],
+) -> Result<Vec<Log>> {
+    let params = json!([{
+        "fromBlock": from_block,
+        "toBlock": to_block,
+        "address": &contracts,
+    }]);
+    send_rpc(rpc_url, "eth_getLogs", params).await
 }
