@@ -111,7 +111,7 @@ the `deliveries` table. It will not be retried
 version: "3"
 services:
   blockwatch:
-    image: ghcr.io/arshsingh/blockwatch:0.1.0
+    image: ghcr.io/arshsingh/blockwatch
     volumes:
       - ./blockwatch.config.json:/blockwatch/blockwatch.config.json
       - ./db.sqlite:/blockwatch/db.sqlite
