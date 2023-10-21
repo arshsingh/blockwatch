@@ -45,14 +45,15 @@ async fn main() -> Result<()> {
         });
     }
 
+    let mut timeout = interval(Duration::from_secs(5));
     loop {
         // Wait for a listener to indicate that there are new deliveries
         // but check every 5 seconds anyway to make sure we don't miss anything
-        let mut timeout = interval(Duration::from_secs(5));
-
         let _ = tokio::select! {
             _ = delivery_rx.recv() => deliver(&pool, &config).await?,
             _ = timeout.tick() => deliver(&pool, &config).await?
         };
+
+        timeout.reset();
     }
 }
