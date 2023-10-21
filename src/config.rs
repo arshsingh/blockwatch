@@ -10,7 +10,6 @@ use figment::{
 };
 use futures::future::join_all;
 use serde::Deserialize;
-use tracing::error;
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
@@ -67,13 +66,7 @@ impl Config {
         let config = join_all(config_files.into_iter().map(load_json_config))
             .await
             .iter()
-            .fold(Figment::new(), |config, json| match json {
-                Ok(value) => config.merge(value),
-                Err(e) => {
-                    error!("Failed to load config: {}", e);
-                    config
-                }
-            })
+            .fold(Figment::new(), |config, json| config.merge(json))
             .merge(Env::raw().split("__"))
             .extract()?;
 
@@ -109,7 +102,7 @@ impl Config {
     }
 }
 
-async fn load_json_config(url: String) -> Result<Data<Json>> {
+async fn load_json_config(url: String) -> Data<Json> {
     let data = match &url[..7] {
         "http://" | "https:/" => {
             let client = reqwest::Client::new();
@@ -117,14 +110,16 @@ async fn load_json_config(url: String) -> Result<Data<Json>> {
                 .get(&url)
                 .timeout(Duration::from_secs(10))
                 .send()
-                .await?
+                .await
+                .unwrap()
                 .text()
-                .await?;
+                .await
+                .unwrap();
 
             Json::string(&res)
         }
         _ => Json::file(url),
     };
 
-    Ok(data)
+    data
 }
