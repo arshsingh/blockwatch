@@ -4,21 +4,16 @@ WORKDIR /blockwatch
 
 RUN apk update && apk add --no-cache musl-dev
 
-COPY Cargo.toml Cargo.toml
-
-RUN mkdir -p src/ && \
-  echo "fn main() {}" > src/main.rs && \
-  cargo build --release && \
-  rm -f target/release/deps/blockwatch*
+RUN cargo init --vcs none
+COPY Cargo.toml Cargo.lock ./
+RUN cargo build --release
 
 COPY . .
+RUN touch src/main.rs && cargo build --release
 
-RUN cargo build --locked --release
-
-FROM scratch
+FROM alpine
 
 WORKDIR /blockwatch
+COPY --from=builder /blockwatch/target/release/blockwatch /bin
 
-COPY --from=builder /blockwatch/target/release/blockwatch .
-
-CMD ["./blockwatch"]
+CMD ["blockwatch"]
